@@ -1,21 +1,3 @@
-/**
- * MIRZAPUR MAIL — Proxy Backend
- * Provider: GuerillaMail Public API (api.guerrillamail.com)
- * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
- *
- * Why GuerillaMail:
- *  - Genuinely public API, no key, no auth, stable since 2006
- *  - Returns PHPSESSID cookie for session continuity
- *  - check_email, fetch_email, get_email_address all documented
- *
- * Session model:
- *  - Frontend gets a short "sid" token from us on /generate
- *  - We map sid → { phpsessid, email, seq } in memory
- *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
- *  - If Vercel cold-starts (session lost), frontend gets session_expired
- *    and auto-regenerates a new address
- */
-
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
 // sid → { phpsessid, email, seq, ts }
