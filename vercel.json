@@ -1,19 +1,24 @@
 {
   "version": 2,
-  "functions": {
-    "api/proxy.js": {
-      "runtime": "nodejs18.x",
-      "maxDuration": 15
-    }
-  },
   "routes": [
-    { "src": "/api/proxy", "dest": "/api/proxy.js" },
-    { "src": "/(.*)",       "dest": "/$1" }
+    {
+      "src": "/api/proxy",
+      "dest": "/api/proxy.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
+    }
   ],
   "headers": [
     {
       "source": "/api/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "no-store, no-cache" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache"
+        }
+      ]
     }
   ]
 }
