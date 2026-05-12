@@ -1,5 +1,5 @@
 /**
- * VOIDMAIL — Proxy Backend
+ * MIRZAPUR MAIL — Proxy Backend
  * Provider: GuerillaMail Public API (api.guerrillamail.com)
  * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
  *
@@ -14,36 +14,27 @@
  *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
  *  - If Vercel cold-starts (session lost), frontend gets session_expired
  *    and auto-regenerates a new address
- *
- * Inbox cache:
- *  - sid → { messages: [...], updatedAt: timestamp }
- *  - Merges + deduplicates every poll response against cached messages
- *  - If provider returns empty, cached messages are served instead
- *  - Entries expire after 10 minutes; a 60s cleanup interval purges them
- *  - In-memory only — Vercel cold starts clear it (acceptable for temp mail)
  */
 
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
-// sid → { phpsessid, sidToken, email, ts }  (seq removed — always full-poll)
+// sid → { phpsessid, email, seq, ts }
 const sessions = new Map();
 
-// ─── inbox cache (10 min TTL) ─────────────────────────────────
-// sid → { messages: [...], updatedAt: ms }
-// Survives provider blips; cleared on Vercel cold start (acceptable).
+// ─── 10-minute inbox cache ────────────────────────────────────
+// Keeps messages alive through provider blips and empty responses.
+// Cleared on Vercel cold start — acceptable for disposable mail.
 
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL  = 10 * 60 * 1000; // 10 minutes
+const inboxCache = new Map();       // sid → { messages: [...], updatedAt: ms }
 
-const inboxCache = new Map();
-
-// Purge expired cache entries AND stale sessions every 60 s
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of inboxCache.entries()) {
-    if (now - entry.updatedAt > CACHE_TTL) inboxCache.delete(key);
-  }
-  for (const [key, sess] of sessions.entries()) {
-    if (now - sess.ts > CACHE_TTL) sessions.delete(key);
+    if (now - entry.updatedAt > CACHE_TTL) {
+      inboxCache.delete(key);
+      sessions.delete(key);
+    }
   }
 }, 60 * 1000);
 
@@ -62,8 +53,8 @@ async function gmGet(url, phpsessid) {
   };
   if (phpsessid) headers['Cookie'] = `PHPSESSID=${phpsessid}`;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000); // 5 s hard timeout
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
 
   let res, text;
   try {
@@ -126,12 +117,11 @@ module.exports = async function handler(req, res) {
       const ourSid = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
       sessions.set(ourSid, {
         phpsessid: newId,
-        sidToken:  data.sid_token || '',
         email:     data.email_addr,
-        ts:        Date.now(),
+        seq:       0,
+        ts:        Number(data.email_timestamp) || 0,
       });
 
-      // Fresh identity — start with a clean cache slot
       inboxCache.set(ourSid, { messages: [], updatedAt: Date.now() });
 
       return res.json({
@@ -153,25 +143,23 @@ module.exports = async function handler(req, res) {
 
     try {
       const url = gmUrl({
-        f: 'check_email', seq: 0,          // always full-poll — cache handles dedup
-        sid_token: sess.sidToken || '',
+        f: 'check_email', seq: sess.seq,
         ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
       });
 
       const { data, newId } = await gmGet(url, sess.phpsessid);
       sess.phpsessid = newId;
-      if (data.sid_token) sess.sidToken = data.sid_token; // keep token fresh if GM rotates it
-      sess.ts = Date.now();                               // reset TTL on activity
       sessions.set(sid, sess);
 
-      const list       = Array.isArray(data.list) ? data.list : [];
-      const freshMsgs  = list
-        .filter(m =>
-          m.mail_id &&
-          m.mail_id !== '0' &&
-          !String(m.mail_from || '').toLowerCase().includes('guerrillamail') &&
-          !String(m.mail_subject || '').toLowerCase().includes('guerrillamail')
-        )
+      const list     = Array.isArray(data.list) ? data.list : [];
+      const messages = list
+        .filter(m => {
+          if (!m.mail_id || m.mail_id === '0') return false;
+          const from    = String(m.mail_from    || '').toLowerCase();
+          const subject = String(m.mail_subject || '').toLowerCase();
+          if (from.includes('guerrillamail') || subject.includes('guerrillamail')) return false;
+          return true;
+        })
         .map(m => ({
           id:        String(m.mail_id),
           from:      m.mail_from   || '',
@@ -180,30 +168,29 @@ module.exports = async function handler(req, res) {
           timestamp: Number(m.mail_timestamp)   || 0,
           read:      m.mail_read === 1,
           date:      m.mail_date || '',
-        }));
+        }))
+        .sort((a, b) => b.timestamp - a.timestamp);
 
-      // ── Merge with cache ────────────────────────────────────
-      // Pull previous messages (if cache is still warm)
-      const cached   = inboxCache.get(sid);
-      const prevMsgs = (cached && Date.now() - cached.updatedAt < CACHE_TTL)
-        ? cached.messages
-        : [];
+      // Advance seq so next poll only fetches newer mail
+      if (messages.length) {
+        const max = Math.max(...messages.map(m => Number(m.id)));
+        if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
+      }
 
-      // Deduplicate: fresh messages take priority; fill in any prior ones by ID
-      const seen     = new Set(freshMsgs.map(m => m.id));
-      const merged   = [
-        ...freshMsgs,
-        ...prevMsgs.filter(m => !seen.has(m.id)),
+      // ── 10-min cache merge ──────────────────────────────────
+      // Merge fresh messages with cached ones so the inbox survives
+      // empty provider responses and brief polling gaps.
+      const prior  = inboxCache.get(sid);
+      const cached = (prior && Date.now() - prior.updatedAt < CACHE_TTL)
+        ? prior.messages : [];
+      const seen   = new Set(messages.map(m => m.id));
+      const merged = [
+        ...messages,
+        ...cached.filter(m => !seen.has(m.id)),
       ].sort((a, b) => b.timestamp - a.timestamp);
-
-      // Persist merged result
       inboxCache.set(sid, { messages: merged, updatedAt: Date.now() });
 
-      // Use merged set as the response; if provider returned nothing,
-      // cached messages still fill the inbox (up to TTL expiry).
-      const messages = merged;
-
-      return res.json({ messages, count: messages.length, cached: prevMsgs.length > 0 });
+      return res.json({ messages: merged, count: merged.length });
     } catch (err) {
       return res.json({ error: 'inbox_failed', detail: err.message, messages: [] });
     }
@@ -219,13 +206,11 @@ module.exports = async function handler(req, res) {
     try {
       const url = gmUrl({
         f: 'fetch_email', email_id,
-        sid_token: sess.sidToken || '',
         ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
       });
 
       const { data, newId } = await gmGet(url, sess.phpsessid);
       sess.phpsessid = newId;
-      if (data.sid_token) sess.sidToken = data.sid_token;
       sessions.set(sid, sess);
 
       return res.json({
@@ -238,25 +223,6 @@ module.exports = async function handler(req, res) {
       });
     } catch (err) {
       return res.json({ error: 'read_failed', detail: err.message });
-    }
-  }
-
-  // ── DEBUG — raw GM response (remove before production if desired) ──
-  if (action === 'debug') {
-    if (!sid) return res.json({ error: 'missing_sid' });
-    const sess = sessions.get(sid);
-    if (!sess) return res.json({ error: 'session_not_found_in_memory', hint: 'Vercel cold-started — regenerate' });
-
-    try {
-      const url = gmUrl({
-        f: 'check_email', seq: 0,          // seq=0 forces full inbox dump
-        sid_token: sess.sidToken || '',
-        ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
-      });
-      const { data, newId } = await gmGet(url, sess.phpsessid);
-      return res.json({ session: { ...sess, phpsessid: '***' }, rawGM: data, rotatedId: newId !== sess.phpsessid });
-    } catch (err) {
-      return res.json({ error: 'debug_failed', detail: err.message });
     }
   }
 
