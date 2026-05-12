@@ -20,6 +20,17 @@ const GM = 'https://api.guerrillamail.com/ajax.php';
 
 // sid → { phpsessid, email, seq, ts }
 const sessions = new Map();
+const inboxCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [sid, cache] of inboxCache.entries()) {
+    if (now - cache.updatedAt > CACHE_TTL) {
+      inboxCache.delete(sid);
+    }
+  }
+}, 60000);
 
 // ─── helpers ──────────────────────────────────────────────────
 
@@ -90,13 +101,17 @@ module.exports = async function handler(req, res) {
 
       // Create our session token
       const ourSid = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
-      sessions.set(ourSid, {
-        phpsessid: newId,
-        email:     data.email_addr,
-        seq:       0,
-        ts:        Number(data.email_timestamp) || 0,
-      });
+sessions.set(ourSid, {
+  phpsessid: newId,
+  email: data.email_addr,
 
+  ts: Number(data.email_timestamp) || 0,
+});
+
+inboxCache.set(ourSid, {
+  messages: [],
+  updatedAt: Date.now()
+});
       return res.json({
         email: data.email_addr,
         sid:   ourSid,
@@ -115,10 +130,11 @@ module.exports = async function handler(req, res) {
     if (!sess)  return res.json({ error: 'session_expired', messages: [] });
 
     try {
-      const url = gmUrl({
-        f: 'check_email', seq: sess.seq,
-        ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
-      });
+const url = gmUrl({
+  f: 'check_email',
+  ip: '127.0.0.1',
+  agent: 'Mozilla_foo_bar',
+});
 
       const { data, newId } = await gmGet(url, sess.phpsessid);
       sess.phpsessid = newId;
@@ -126,7 +142,12 @@ module.exports = async function handler(req, res) {
 
       const list     = Array.isArray(data.list) ? data.list : [];
       const messages = list
-        .filter(m => m.mail_id && m.mail_id !== '0')
+        .filter(m =>
+  m.mail_id &&
+  m.mail_id !== '0' &&
+  !String(m.mail_from || '').toLowerCase().includes('guerrillamail') &&
+  !String(m.mail_subject || '').toLowerCase().includes('guerrillamail')
+)
         .map(m => ({
           id:        String(m.mail_id),
           from:      m.mail_from   || '',
@@ -138,15 +159,41 @@ module.exports = async function handler(req, res) {
         }))
         .sort((a, b) => b.timestamp - a.timestamp);
 
-      // Advance seq so next poll only fetches newer mail
-      if (messages.length) {
-        const max = Math.max(...messages.map(m => Number(m.id)));
-        if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
-      }
+// ── CACHE MERGE ─────────────────────────────
 
-      return res.json({ messages, count: data.count || 0 });
-    } catch (err) {
-      return res.json({ error: 'inbox_failed', detail: err.message, messages: [] });
+const prevCache = inboxCache.get(sid);
+
+const oldMessages =
+  prevCache &&
+  (Date.now() - prevCache.updatedAt < CACHE_TTL)
+    ? prevCache.messages
+    : [];
+
+const merged = [
+  ...messages,
+  ...oldMessages.filter(
+    old => !messages.some(newMsg => newMsg.id === old.id)
+  )
+];
+
+merged.sort((a, b) => b.timestamp - a.timestamp);
+
+inboxCache.set(sid, {
+  messages: merged,
+  updatedAt: Date.now()
+});
+
+return res.json({
+  messages: merged,
+  count: merged.length,
+  cached: true
+});
+          } catch (err) {
+      return res.json({
+        error: 'inbox_failed',
+        detail: err.message,
+        messages: []
+      });
     }
   }
 
