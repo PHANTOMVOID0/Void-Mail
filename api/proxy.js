@@ -78,11 +78,11 @@ module.exports = async function handler(req, res) {
   // ── GENERATE ──────────────────────────────────────────────
   if (action === 'generate') {
     try {
-      const url = gmUrl({
-        f: 'get_email_address', lang: 'en',
-        ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
-      });
-
+const url = gmUrl({
+  f: 'check_email',
+  ip: '127.0.0.1',
+  agent: 'Mozilla_foo_bar',
+});
       const { data, newId } = await gmGet(url, null);
       if (!data.email_addr) {
         return res.json({ error: 'no_email', debug: data });
@@ -107,104 +107,41 @@ module.exports = async function handler(req, res) {
     }
   }
 
-// ── INBOX ─────────────────────────────────────────────────
-if (action === 'inbox') {
+  // ── INBOX ─────────────────────────────────────────────────
+  if (action === 'inbox') {
+    if (!sid) return res.json({ error: 'missing_sid', messages: [] });
 
-  if (!sid) {
-    return res.json({
-      error: 'missing_sid',
-      messages: []
-    });
-  }
+    const sess = sessions.get(sid);
+    if (!sess)  return res.json({ error: 'session_expired', messages: [] });
 
-  const sess = sessions.get(sid);
+    try {
+      const url = gmUrl({
+        f: 'check_email', seq: sess.seq,
+        ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
+      });
 
-  if (!sess) {
-    return res.json({
-      error: 'session_expired',
-      messages: []
-    });
-  }
+      const { data, newId } = await gmGet(url, sess.phpsessid);
+      sess.phpsessid = newId;
+      sessions.set(sid, sess);
 
-  try {
-
-    // IMPORTANT:
-    // remove seq completely
-    // always fetch full inbox
-    const url = gmUrl({
-      f: 'check_email',
-      ip: '127.0.0.1',
-      agent: 'Mozilla_foo_bar',
-    });
-
-    const { data, newId } = await gmGet(url, sess.phpsessid);
-
-    sess.phpsessid = newId;
-    sessions.set(sid, sess);
-
-    const list = Array.isArray(data.list)
-      ? data.list
-      : [];
-
-    const messages = list
-      .filter(m =>
-        m.mail_id &&
-        m.mail_id !== '0'
-      )
-
-      // REMOVE GuerrillaMail greeting mail
-      .filter(m => {
-        const from = String(m.mail_from || '').toLowerCase();
-        const sub  = String(m.mail_subject || '').toLowerCase();
-
-        return !(
-          from.includes('guerrillamail') ||
-          sub.includes('guerrillamail')
-        );
-      })
-
-      .map(m => ({
-        id: String(m.mail_id),
-
-        from: m.mail_from || '',
-
-        subject: htmlDecode(
-          m.mail_subject || '(no subject)'
-        ),
-
-        preview: htmlDecode(
-          m.mail_excerpt || ''
-        ),
-
-        timestamp: Number(
-          m.mail_timestamp
-        ) || 0,
-
-        read: m.mail_read === 1,
-
-        date: m.mail_date || '',
-      }))
-
-      .sort((a, b) =>
-        b.timestamp - a.timestamp
-      );
-
-    return res.json({
-      messages,
-      count: messages.length
-    });
-
-  } catch (err) {
-
-    return res.json({
-      error: 'inbox_failed',
-      detail: err.message,
-      messages: []
-    });
-
-  }
-}
-
+      const list     = Array.isArray(data.list) ? data.list : [];
+      const messages = list
+        .filter(m =>
+          m.mail_id &&
+          m.mail_id !== '0' &&
+          !String(m.mail_from || '').toLowerCase().includes('guerrillamail') &&
+          !String(m.mail_subject || '').toLowerCase().includes('guerrillamail')
+        )
+        .map(m => ({
+          id:        String(m.mail_id),
+          from:      m.mail_from   || '',
+          subject:   htmlDecode(m.mail_subject  || '(no subject)'),
+          preview:   htmlDecode(m.mail_excerpt  || ''),
+          timestamp: Number(m.mail_timestamp)   || 0,
+          read:      m.mail_read === 1,
+          date:      m.mail_date || '',
+        }))
+        .sort((a, b) => b.timestamp - a.timestamp);
   // ── READ FULL EMAIL ────────────────────────────────────────
   if (action === 'read') {
     if (!sid || !email_id) return res.json({ error: 'missing_params' });
