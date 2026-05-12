@@ -1,5 +1,5 @@
 /* =============================================
-   MIRZAPUR MAIL — Frontend Script
+   VOIDMAIL — Frontend Script
    Provider: GuerillaMail via /api/proxy
    ============================================= */
 
@@ -10,16 +10,20 @@ const OTP_REGEX = /\b\d{4,8}\b/g;
 
 // ── STATE ─────────────────────────────────────
 let currentEmail    = '';
-let currentSid      = '';        // our session token from proxy
+let currentSid      = '';
 let refreshInterval = null;
+let countdownTimer  = null;
 let isFetching      = false;
 let inboxUnlocked   = false;
-let seenIds         = new Set(); // track already-shown mail ids
+let seenIds         = new Set();
+let countdownVal    = 15;
 
 // ── THREE.JS BACKGROUND ──────────────────────
 
 (function initThree() {
-  const canvas   = document.getElementById('bg-canvas');
+  const canvas = document.getElementById('bg-canvas');
+  if (!canvas || typeof THREE === 'undefined') return;
+
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -28,26 +32,39 @@ let seenIds         = new Set(); // track already-shown mail ids
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.z = 25;
 
-  const count = 1800;
+  // Layer 1 — dim background particles
+  const count = 2000;
   const pos   = new Float32Array(count * 3);
-  for (let i = 0; i < count * 3; i++) pos[i] = (Math.random() - 0.5) * 70;
+  for (let i = 0; i < count * 3; i++) pos[i] = (Math.random() - 0.5) * 80;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.06, color: 0x440000 }));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.05, color: 0x330011 }));
   scene.add(pts);
 
+  // Layer 2 — mid accent particles
+  const pos2 = new Float32Array(700 * 3);
+  for (let i = 0; i < 700 * 3; i++) pos2[i] = (Math.random() - 0.5) * 55;
   const geo2 = new THREE.BufferGeometry();
-  const pos2 = new Float32Array(600 * 3);
-  for (let i = 0; i < 600 * 3; i++) pos2[i] = (Math.random() - 0.5) * 50;
   geo2.setAttribute('position', new THREE.BufferAttribute(pos2, 3));
-  const pts2 = new THREE.Points(geo2, new THREE.PointsMaterial({ size: 0.1, color: 0x880000 }));
+  const pts2 = new THREE.Points(geo2, new THREE.PointsMaterial({ size: 0.09, color: 0x880022 }));
   scene.add(pts2);
+
+  // Layer 3 — bright red sparks
+  const pos3 = new Float32Array(150 * 3);
+  for (let i = 0; i < 150 * 3; i++) pos3[i] = (Math.random() - 0.5) * 35;
+  const geo3 = new THREE.BufferGeometry();
+  geo3.setAttribute('position', new THREE.BufferAttribute(pos3, 3));
+  const pts3 = new THREE.Points(geo3, new THREE.PointsMaterial({ size: 0.15, color: 0xff1744 }));
+  scene.add(pts3);
 
   (function animate() {
     requestAnimationFrame(animate);
-    pts.rotation.y  += 0.0004;
+    pts.rotation.y  += 0.0003;
     pts.rotation.x  += 0.0001;
-    pts2.rotation.y -= 0.0006;
+    pts2.rotation.y -= 0.0005;
+    pts2.rotation.z += 0.0002;
+    pts3.rotation.y += 0.001;
+    pts3.rotation.x -= 0.0008;
     renderer.render(scene, camera);
   })();
 
@@ -58,29 +75,14 @@ let seenIds         = new Set(); // track already-shown mail ids
   });
 })();
 
-// ── VISITOR COUNTER ──────────────────────────
-
-(function animateCounter() {
-  const el     = document.getElementById('visitor-count');
-  const target = 5404 + Math.floor(Math.random() * 300);
-  let cur = 0;
-  const step = Math.ceil(target / 60);
-  const t = setInterval(() => {
-    cur = Math.min(cur + step, target);
-    el.textContent = String(cur).padStart(4, '0');
-    if (cur >= target) clearInterval(t);
-  }, 25);
-})();
-
 // ── VISIBILITY POLLING PAUSE ─────────────────
-// Stop polling when tab is hidden, resume when visible
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     stopRefresh();
   } else if (inboxUnlocked && currentSid) {
     fetchInbox();
-    refreshInterval = setInterval(fetchInbox, 8000);
+    startRefreshCycle();
   }
 });
 
@@ -89,6 +91,7 @@ document.addEventListener('visibilitychange', () => {
 let toastTimer;
 function showToast(msg, duration = 2400) {
   const t = document.getElementById('toast');
+  if (!t) return;
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimer);
@@ -101,21 +104,27 @@ function extractOTP(text) {
   if (!text) return null;
   const m = String(text).match(OTP_REGEX);
   if (!m) return null;
-  // Prefer 6-digit, then any 4-8 digit number
   return m.find(x => x.length === 6)
       || m.find(x => x.length >= 4)
       || null;
 }
 
-function showOTPStrip(code) {
-  document.getElementById('otp-code').textContent = code;
-  document.getElementById('otp-strip').style.display = 'flex';
+function showOTPBanner(code) {
+  const banner = document.getElementById('otp-banner');
+  const val    = document.getElementById('otp-value');
+  if (!banner || !val) return;
+  val.textContent = code;
+  banner.style.display = 'flex';
+
+  // Pulse animation re-trigger
+  banner.classList.remove('otp-pulse');
+  void banner.offsetWidth;
+  banner.classList.add('otp-pulse');
 }
 
-function copyOTP() {
-  const code = document.getElementById('otp-code').textContent;
-  copyText(code);
-  showToast('✓ OTP COPIED');
+function hideOTPBanner() {
+  const banner = document.getElementById('otp-banner');
+  if (banner) banner.style.display = 'none';
 }
 
 // ── COPY ─────────────────────────────────────
@@ -144,6 +153,32 @@ function copyFallback(text) {
   document.body.removeChild(ta);
 }
 
+// ── STATUS BAR ───────────────────────────────
+
+function setStatus(state, msgCount) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const msgs = document.getElementById('status-msgs');
+
+  if (!dot || !text) return;
+
+  dot.className = 'status-dot';
+
+  if (state === 'online') {
+    dot.classList.add('online');
+    text.textContent = 'ONLINE';
+  } else if (state === 'scanning') {
+    dot.classList.add('scanning');
+    text.textContent = 'SCANNING';
+  } else {
+    text.textContent = 'OFFLINE';
+  }
+
+  if (msgs && msgCount !== undefined) {
+    msgs.textContent = `${msgCount} MSG${msgCount !== 1 ? 'S' : ''}`;
+  }
+}
+
 // ── REFRESH CONTROL ──────────────────────────
 
 function stopRefresh() {
@@ -151,45 +186,96 @@ function stopRefresh() {
     clearInterval(refreshInterval);
     refreshInterval = null;
   }
+  stopCountdown();
+}
+
+function startRefreshCycle() {
+  stopRefresh();
+  startCountdown();
+  refreshInterval = setInterval(() => {
+    fetchInbox();
+    startCountdown(); // reset countdown after each poll
+  }, 15000);
+}
+
+function startCountdown() {
+  stopCountdown();
+  countdownVal = 15;
+  updateCountdown();
+  countdownTimer = setInterval(() => {
+    countdownVal = Math.max(0, countdownVal - 1);
+    updateCountdown();
+  }, 1000);
+}
+
+function stopCountdown() {
+  if (countdownTimer !== null) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+}
+
+function updateCountdown() {
+  const el = document.getElementById('refresh-countdown');
+  if (el) el.textContent = countdownVal;
 }
 
 // ── LOCALSTORAGE PERSISTENCE ─────────────────
-// Survives page refresh (not Vercel cold start, which clears server sessions)
 
 function saveSession() {
   try {
-    localStorage.setItem('mm_email', currentEmail);
-    localStorage.setItem('mm_sid',   currentSid);
+    localStorage.setItem('vm_email', currentEmail);
+    localStorage.setItem('vm_sid',   currentSid);
   } catch {}
 }
 
 function loadSession() {
   try {
-    const email = localStorage.getItem('mm_email');
-    const sid   = localStorage.getItem('mm_sid');
+    const email = localStorage.getItem('vm_email');
+    const sid   = localStorage.getItem('vm_sid');
     return (email && sid) ? { email, sid } : null;
   } catch { return null; }
 }
 
 function clearSession() {
   try {
-    localStorage.removeItem('mm_email');
-    localStorage.removeItem('mm_sid');
+    localStorage.removeItem('vm_email');
+    localStorage.removeItem('vm_sid');
   } catch {}
+}
+
+// ── EMAIL DISPLAY HELPERS ────────────────────
+
+function setEmailDisplay(text, isPlaceholder = false) {
+  const box = document.getElementById('email-display');
+  if (!box) return;
+
+  if (isPlaceholder) {
+    box.innerHTML = '<span class="email-placeholder">_ _ _ _ _ _ _ _ @ _ _ _ _ . _ _ _</span>';
+  } else {
+    box.textContent = text;
+  }
 }
 
 // ── GENERATE EMAIL ───────────────────────────
 
 async function generateEmail() {
-  const input = document.getElementById('email-display');
-  input.value = 'HACKING...';
-  input.style.color = '#555';
+  setEmailDisplay('HACKING...', false);
+
+  const copyBtn    = document.getElementById('btn-copy');
+  const refreshBtn = document.getElementById('btn-refresh-manual');
+  const indicator  = document.getElementById('refresh-indicator');
+
+  if (copyBtn)    copyBtn.disabled = true;
+  if (refreshBtn) refreshBtn.disabled = true;
+  if (indicator)  indicator.style.display = 'none';
 
   stopRefresh();
   inboxUnlocked = false;
   seenIds.clear();
-  lockInbox();
-  document.getElementById('otp-strip').style.display = 'none';
+  setStatus('offline');
+  hideOTPBanner();
+  resetInboxUI();
 
   try {
     const res  = await fetch(`${PROXY}?action=generate`, { cache: 'no-store' });
@@ -203,55 +289,49 @@ async function generateEmail() {
     currentSid   = data.sid;
     saveSession();
 
-    input.value      = currentEmail;
-    input.style.color = '';
+    setEmailDisplay(currentEmail, false);
+    if (copyBtn)    { copyBtn.disabled = false; }
+    if (refreshBtn) { refreshBtn.disabled = false; }
+    if (indicator)  { indicator.style.display = 'flex'; }
+
     showToast('✓ NEW IDENTITY CREATED');
+    setStatus('online', 0);
+
+    // Immediately unlock inbox and begin polling
+    inboxUnlocked = true;
+    await fetchInbox();
+    startRefreshCycle();
 
   } catch (err) {
     console.error('[generate]', err);
-    input.value       = 'ERROR — RETRY';
-    input.style.color = '#ff0000';
+    setEmailDisplay('ERROR — RETRY', false);
+    showToast('✗ GENERATION FAILED');
+    setStatus('offline');
   }
 }
 
-// ── SHARINGAN UNLOCK ─────────────────────────
+// ── RESET INBOX UI ────────────────────────────
 
-function unlockInbox() {
-  if (!currentEmail || !currentSid) {
-    showToast('✗ GENERATE AN IDENTITY FIRST');
-    return;
+function resetInboxUI() {
+  const list = document.getElementById('inbox-list');
+  if (!list) return;
+
+  // Remove message cards but keep the empty placeholder
+  Array.from(list.querySelectorAll('.inbox-card')).forEach(c => c.remove());
+
+  let empty = document.getElementById('inbox-empty');
+  if (!empty) {
+    empty = document.createElement('div');
+    empty.className = 'inbox-empty';
+    empty.id = 'inbox-empty';
+    empty.innerHTML = `
+      <div class="empty-icon">▣</div>
+      <div class="empty-title">NO TRANSMISSIONS DETECTED</div>
+      <div class="empty-sub">Generate an identity above to begin intercepting messages</div>
+    `;
+    list.appendChild(empty);
   }
-
-  // Kill any existing interval BEFORE the timeout fires
-  stopRefresh();
-
-  const overlay = document.getElementById('sharingan-overlay');
-  overlay.style.display = 'flex';
-
-  setTimeout(() => {
-    overlay.style.display = 'none';
-    inboxUnlocked = true;
-    revealInbox();
-    fetchInbox();                                       // immediate first fetch
-    refreshInterval = setInterval(fetchInbox, 8000);    // then every 8s
-  }, 1400);
-}
-
-// ── LOCK / REVEAL INBOX ───────────────────────
-
-function lockInbox() {
-  document.getElementById('lock-screen').classList.remove('hidden');
-  document.getElementById('inbox-inner').classList.remove('visible');
-  document.getElementById('inbox-loader').style.display = 'none';
-  document.getElementById('btn-refresh').style.display  = 'none';
-  document.getElementById('inbox-messages').innerHTML   =
-    '<div class="inbox-empty">WAITING FOR DATA PACKETS...</div>';
-}
-
-function revealInbox() {
-  document.getElementById('lock-screen').classList.add('hidden');
-  document.getElementById('inbox-inner').classList.add('visible');
-  document.getElementById('btn-refresh').style.display = 'inline-flex';
+  empty.style.display = 'flex';
 }
 
 // ── FETCH INBOX ──────────────────────────────
@@ -260,11 +340,10 @@ async function fetchInbox() {
   if (isFetching || !currentSid || !inboxUnlocked) return;
   isFetching = true;
 
-  const loader = document.getElementById('inbox-loader');
-  const inner  = document.getElementById('inbox-inner');
+  const loading = document.getElementById('inbox-loading');
+  setStatus('scanning');
 
-  loader.style.display = 'flex';
-  inner.style.opacity  = '0.5';
+  if (loading) loading.style.display = 'flex';
 
   try {
     const res  = await fetch(`${PROXY}?action=inbox&sid=${currentSid}`, { cache: 'no-store' });
@@ -275,7 +354,7 @@ async function fetchInbox() {
       clearSession();
       stopRefresh();
       inboxUnlocked = false;
-      lockInbox();
+      setStatus('offline');
       showToast('⚠ SESSION EXPIRED — REGENERATING...', 3000);
       await generateEmail();
       return;
@@ -283,38 +362,42 @@ async function fetchInbox() {
 
     if (data.error) {
       console.warn('[inbox error]', data);
+      setStatus('online');
       return;
     }
 
-    renderMessages(data.messages || []);
+    const messages = data.messages || [];
+    setStatus('online', messages.length);
+    renderMessages(messages);
 
   } catch (err) {
     console.error('[inbox fetch error]', err);
+    setStatus('online');
   } finally {
-    isFetching          = false;
-    loader.style.display = 'none';
-    inner.style.opacity  = '1';
+    isFetching = false;
+    if (loading) loading.style.display = 'none';
   }
 }
 
 // ── RENDER MESSAGES ──────────────────────────
 
 function renderMessages(messages) {
-  const container = document.getElementById('inbox-messages');
-  document.getElementById('otp-strip').style.display = 'none';
+  const list  = document.getElementById('inbox-list');
+  const empty = document.getElementById('inbox-empty');
+
+  hideOTPBanner();
 
   if (!messages.length) {
-    if (container.querySelector('.inbox-empty')) return; // already showing empty
-    container.innerHTML = '<div class="inbox-empty">NO PACKETS FOUND</div>';
+    if (empty) empty.style.display = 'flex';
     return;
   }
 
-  // Clear empty state if present
-  if (container.querySelector('.inbox-empty')) container.innerHTML = '';
+  // Hide empty state
+  if (empty) empty.style.display = 'none';
 
   // Show OTP from latest message preview
   const latestOTP = extractOTP(messages[0].preview + ' ' + messages[0].subject);
-  if (latestOTP) showOTPStrip(latestOTP);
+  if (latestOTP) showOTPBanner(latestOTP);
 
   // Only insert messages we haven't rendered yet
   let anyNew = false;
@@ -324,15 +407,25 @@ function renderMessages(messages) {
     anyNew = true;
 
     const card = buildCard(msg);
-    container.insertBefore(card, container.firstChild); // newest on top
+    // Insert newest on top, before existing cards (not before empty placeholder)
+    const firstCard = list.querySelector('.inbox-card');
+    if (firstCard) {
+      list.insertBefore(card, firstCard);
+    } else {
+      list.appendChild(card);
+    }
+
+    // Staggered entrance animation
+    card.style.opacity = '0';
+    card.style.transform = 'translateX(-12px)';
+    requestAnimationFrame(() => {
+      card.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+      card.style.opacity = '1';
+      card.style.transform = 'translateX(0)';
+    });
   });
 
-  if (anyNew) {
-    // Subtle flash to signal new mail arrived
-    container.style.transition = 'opacity 0.15s';
-    container.style.opacity = '0.6';
-    setTimeout(() => { container.style.opacity = '1'; }, 150);
-  }
+  if (anyNew) showToast('⚡ NEW TRANSMISSION INTERCEPTED');
 }
 
 function buildCard(msg) {
@@ -340,17 +433,17 @@ function buildCard(msg) {
   const time = formatTime(msg.timestamp);
 
   const card = document.createElement('div');
-  card.className = `msg-card${otp ? ' has-otp' : ''}`;
+  card.className = `inbox-card${otp ? ' has-otp' : ''}`;
   card.dataset.id = msg.id;
 
   card.innerHTML = `
-    <div class="msg-meta">
-      <span class="msg-from">FROM: ${esc(msg.from)}</span>
-      <span class="msg-time">${time}</span>
+    <div class="card-top">
+      <span class="card-from">FROM: ${esc(msg.from)}</span>
+      <span class="card-time">${time}</span>
     </div>
-    <div class="msg-subject">${esc(msg.subject)}</div>
-    <div class="msg-preview">${esc(msg.preview)}</div>
-    ${otp ? `<div class="msg-otp-tag">⚡ OTP: ${esc(otp)}</div>` : ''}
+    <div class="card-subject">${esc(msg.subject)}</div>
+    <div class="card-preview">${esc(msg.preview)}</div>
+    ${otp ? `<div class="card-otp-tag">⚡ OTP: ${esc(otp)}</div>` : ''}
   `;
 
   card.addEventListener('click', () => openMessage(msg));
@@ -360,57 +453,61 @@ function buildCard(msg) {
 // ── OPEN MESSAGE MODAL ────────────────────────
 
 async function openMessage(msg) {
-  // Show modal immediately with what we have, then load full body
-  const modal = document.getElementById('msg-modal');
+  const overlay = document.getElementById('msg-modal-overlay');
+
   document.getElementById('modal-subject').textContent = msg.subject;
   document.getElementById('modal-from').textContent    = 'FROM: ' + msg.from;
-  document.getElementById('modal-time').textContent    = 'TIME: '  + formatTime(msg.timestamp);
-  document.getElementById('modal-body').innerHTML      = '<div class="modal-loading">DECRYPTING MESSAGE...</div>';
+  document.getElementById('modal-time').textContent    = 'TIME: ' + formatTime(msg.timestamp);
+  document.getElementById('modal-body').innerHTML      = '<div class="modal-loading">DECRYPTING TRANSMISSION...</div>';
 
-  const otpModal = document.getElementById('modal-otp-strip');
-  otpModal.style.display = 'none';
+  const otpModalBanner = document.getElementById('otp-modal-banner');
+  if (otpModalBanner) otpModalBanner.style.display = 'none';
 
-  document.getElementById('msg-modal-overlay').style.display = 'flex';
+  overlay.style.display = 'flex';
 
-  // Fetch full body
   try {
     const res  = await fetch(`${PROXY}?action=read&sid=${currentSid}&email_id=${msg.id}`, { cache: 'no-store' });
     const data = await res.json();
 
     if (data.error) {
-      document.getElementById('modal-body').innerHTML = `<p style="color:#555">Failed to load: ${data.error}</p>`;
+      document.getElementById('modal-body').innerHTML =
+        `<p style="color:var(--text-secondary)">Failed to load: ${data.error}</p>`;
       return;
     }
 
-    // GM body is HTML with JS/iframes already stripped
     document.getElementById('modal-body').innerHTML = sanitizeBody(data.body);
 
     // OTP detection on full body
     const bodyText = data.body.replace(/<[^>]+>/g, ' ');
     const otp = extractOTP(bodyText + ' ' + data.subject);
-    if (otp) {
-      document.getElementById('modal-otp-code').textContent = otp;
-      otpModal.style.display = 'flex';
-      document.getElementById('modal-otp-copy').onclick = () => {
-        copyText(otp);
-        showToast('✓ OTP COPIED');
-      };
+    if (otp && otpModalBanner) {
+      const valEl = document.getElementById('otp-modal-val');
+      if (valEl) valEl.textContent = otp;
+      otpModalBanner.style.display = 'flex';
+
+      const copyBtn = document.getElementById('btn-otp-copy-modal');
+      if (copyBtn) {
+        copyBtn.onclick = () => {
+          copyText(otp);
+          showToast('✓ OTP COPIED');
+        };
+      }
     }
 
   } catch (err) {
-    document.getElementById('modal-body').innerHTML = `<p style="color:#555">Error: ${err.message}</p>`;
+    document.getElementById('modal-body').innerHTML =
+      `<p style="color:var(--text-secondary)">Error: ${err.message}</p>`;
   }
 }
 
 function closeModal() {
-  document.getElementById('msg-modal-overlay').style.display = 'none';
+  const overlay = document.getElementById('msg-modal-overlay');
+  if (overlay) overlay.style.display = 'none';
 }
 
 // ── SANITIZE GM HTML BODY ─────────────────────
-// GM already strips JS/iframes, but we additionally block external images by default
 
 function sanitizeBody(html) {
-  // Replace img src with data-src to prevent auto-loading
   return html.replace(/<img([^>]*)\ssrc=/gi, '<img$1 data-src=');
 }
 
@@ -439,22 +536,52 @@ function esc(s) {
 // ── INIT ─────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', async () => {
-  // Bind modal close
-  document.getElementById('msg-modal-close').addEventListener('click', closeModal);
-  document.getElementById('msg-modal-overlay').addEventListener('click', e => {
+
+  // ── Button bindings ──
+  const btnGenerate = document.getElementById('btn-generate');
+  const btnCopy     = document.getElementById('btn-copy');
+  const btnRefresh  = document.getElementById('btn-refresh-manual');
+  const btnOtpCopy  = document.getElementById('btn-otp-copy');
+
+  if (btnGenerate) btnGenerate.addEventListener('click', generateEmail);
+  if (btnCopy)     btnCopy.addEventListener('click', copyEmail);
+  if (btnRefresh)  btnRefresh.addEventListener('click', () => fetchInbox());
+  if (btnOtpCopy)  {
+    btnOtpCopy.addEventListener('click', () => {
+      const code = document.getElementById('otp-value')?.textContent;
+      if (code) { copyText(code); showToast('✓ OTP COPIED'); }
+    });
+  }
+
+  // ── Modal bindings ──
+  document.getElementById('msg-modal-close')?.addEventListener('click', closeModal);
+  document.getElementById('msg-modal-overlay')?.addEventListener('click', e => {
     if (e.target === document.getElementById('msg-modal-overlay')) closeModal();
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
-  // Try restoring previous session from localStorage
+  // ── Try restoring previous session ──
   const saved = loadSession();
   if (saved) {
-    currentEmail = saved.email;
-    currentSid   = saved.sid;
-    const input  = document.getElementById('email-display');
-    input.value      = currentEmail;
-    input.style.color = '';
+    currentEmail  = saved.email;
+    currentSid    = saved.sid;
+    inboxUnlocked = true;
+
+    setEmailDisplay(currentEmail, false);
+    setStatus('online', 0);
+
+    const copyBtn    = document.getElementById('btn-copy');
+    const refreshBtn = document.getElementById('btn-refresh-manual');
+    const indicator  = document.getElementById('refresh-indicator');
+
+    if (copyBtn)    copyBtn.disabled = false;
+    if (refreshBtn) refreshBtn.disabled = false;
+    if (indicator)  indicator.style.display = 'flex';
+
     showToast('✓ IDENTITY RESTORED', 2000);
+
+    await fetchInbox();
+    startRefreshCycle();
   } else {
     await generateEmail();
   }
