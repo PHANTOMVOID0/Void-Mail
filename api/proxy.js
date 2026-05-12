@@ -25,7 +25,7 @@
 
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
-// sid → { phpsessid, email, seq, ts }
+// sid → { phpsessid, sidToken, email, ts }  (seq removed — always full-poll)
 const sessions = new Map();
 
 // ─── inbox cache (10 min TTL) ─────────────────────────────────
@@ -36,11 +36,14 @@ const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
 const inboxCache = new Map();
 
-// Purge expired entries every 60 s to keep serverless memory lean
+// Purge expired cache entries AND stale sessions every 60 s
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of inboxCache.entries()) {
     if (now - entry.updatedAt > CACHE_TTL) inboxCache.delete(key);
+  }
+  for (const [key, sess] of sessions.entries()) {
+    if (now - sess.ts > CACHE_TTL) sessions.delete(key);
   }
 }, 60 * 1000);
 
@@ -59,8 +62,16 @@ async function gmGet(url, phpsessid) {
   };
   if (phpsessid) headers['Cookie'] = `PHPSESSID=${phpsessid}`;
 
-  const res  = await fetch(url, { headers });
-  const text = await res.text();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000); // 5 s hard timeout
+
+  let res, text;
+  try {
+    res  = await fetch(url, { headers, signal: ctrl.signal });
+    text = await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
 
   // Rotate PHPSESSID if GM sends a new one
   const sc    = res.headers.get('set-cookie') || '';
@@ -115,9 +126,9 @@ module.exports = async function handler(req, res) {
       const ourSid = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
       sessions.set(ourSid, {
         phpsessid: newId,
+        sidToken:  data.sid_token || '',
         email:     data.email_addr,
-        seq:       0,
-        ts:        Number(data.email_timestamp) || 0,
+        ts:        Date.now(),
       });
 
       // Fresh identity — start with a clean cache slot
@@ -142,12 +153,15 @@ module.exports = async function handler(req, res) {
 
     try {
       const url = gmUrl({
-        f: 'check_email', seq: sess.seq,
+        f: 'check_email', seq: 0,          // always full-poll — cache handles dedup
+        sid_token: sess.sidToken || '',
         ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
       });
 
       const { data, newId } = await gmGet(url, sess.phpsessid);
       sess.phpsessid = newId;
+      if (data.sid_token) sess.sidToken = data.sid_token; // keep token fresh if GM rotates it
+      sess.ts = Date.now();                               // reset TTL on activity
       sessions.set(sid, sess);
 
       const list       = Array.isArray(data.list) ? data.list : [];
@@ -189,12 +203,6 @@ module.exports = async function handler(req, res) {
       // cached messages still fill the inbox (up to TTL expiry).
       const messages = merged;
 
-      // Advance seq so next poll only fetches newer mail
-      if (freshMsgs.length) {
-        const max = Math.max(...freshMsgs.map(m => Number(m.id)));
-        if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
-      }
-
       return res.json({ messages, count: messages.length, cached: prevMsgs.length > 0 });
     } catch (err) {
       return res.json({ error: 'inbox_failed', detail: err.message, messages: [] });
@@ -211,11 +219,13 @@ module.exports = async function handler(req, res) {
     try {
       const url = gmUrl({
         f: 'fetch_email', email_id,
+        sid_token: sess.sidToken || '',
         ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
       });
 
       const { data, newId } = await gmGet(url, sess.phpsessid);
       sess.phpsessid = newId;
+      if (data.sid_token) sess.sidToken = data.sid_token;
       sessions.set(sid, sess);
 
       return res.json({
@@ -228,6 +238,25 @@ module.exports = async function handler(req, res) {
       });
     } catch (err) {
       return res.json({ error: 'read_failed', detail: err.message });
+    }
+  }
+
+  // ── DEBUG — raw GM response (remove before production if desired) ──
+  if (action === 'debug') {
+    if (!sid) return res.json({ error: 'missing_sid' });
+    const sess = sessions.get(sid);
+    if (!sess) return res.json({ error: 'session_not_found_in_memory', hint: 'Vercel cold-started — regenerate' });
+
+    try {
+      const url = gmUrl({
+        f: 'check_email', seq: 0,          // seq=0 forces full inbox dump
+        sid_token: sess.sidToken || '',
+        ip: '127.0.0.1', agent: 'Mozilla_foo_bar',
+      });
+      const { data, newId } = await gmGet(url, sess.phpsessid);
+      return res.json({ session: { ...sess, phpsessid: '***' }, rawGM: data, rotatedId: newId !== sess.phpsessid });
+    } catch (err) {
+      return res.json({ error: 'debug_failed', detail: err.message });
     }
   }
 
