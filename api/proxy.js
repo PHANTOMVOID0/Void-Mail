@@ -1,42 +1,8 @@
-/**
- * MIRZAPUR MAIL — Proxy Backend
- * Provider: GuerillaMail Public API (api.guerrillamail.com)
- * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
- *
- * Why GuerillaMail:
- *  - Genuinely public API, no key, no auth, stable since 2006
- *  - Returns PHPSESSID cookie for session continuity
- *  - check_email, fetch_email, get_email_address all documented
- *
- * Session model:
- *  - Frontend gets a short "sid" token from us on /generate
- *  - We map sid → { phpsessid, email, seq } in memory
- *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
- *  - If Vercel cold-starts (session lost), frontend gets session_expired
- *    and auto-regenerates a new address
- */
 
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
 // sid → { phpsessid, email, seq, ts }
 const sessions = new Map();
-
-// ─── 10-minute inbox cache ────────────────────────────────────
-// Keeps messages alive through provider blips and empty responses.
-// Cleared on Vercel cold start — acceptable for disposable mail.
-
-const CACHE_TTL  = 10 * 60 * 1000; // 10 minutes
-const inboxCache = new Map();       // sid → { messages: [...], updatedAt: ms }
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of inboxCache.entries()) {
-    if (now - entry.updatedAt > CACHE_TTL) {
-      inboxCache.delete(key);
-      sessions.delete(key);
-    }
-  }
-}, 60 * 1000);
 
 // ─── helpers ──────────────────────────────────────────────────
 
@@ -53,16 +19,8 @@ async function gmGet(url, phpsessid) {
   };
   if (phpsessid) headers['Cookie'] = `PHPSESSID=${phpsessid}`;
 
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000);
-
-  let res, text;
-  try {
-    res  = await fetch(url, { headers, signal: ctrl.signal });
-    text = await res.text();
-  } finally {
-    clearTimeout(timer);
-  }
+  const res  = await fetch(url, { headers });
+  const text = await res.text();
 
   // Rotate PHPSESSID if GM sends a new one
   const sc    = res.headers.get('set-cookie') || '';
@@ -122,8 +80,6 @@ module.exports = async function handler(req, res) {
         ts:        Number(data.email_timestamp) || 0,
       });
 
-      inboxCache.set(ourSid, { messages: [], updatedAt: Date.now() });
-
       return res.json({
         email: data.email_addr,
         sid:   ourSid,
@@ -153,13 +109,7 @@ module.exports = async function handler(req, res) {
 
       const list     = Array.isArray(data.list) ? data.list : [];
       const messages = list
-        .filter(m => {
-          if (!m.mail_id || m.mail_id === '0') return false;
-          const from    = String(m.mail_from    || '').toLowerCase();
-          const subject = String(m.mail_subject || '').toLowerCase();
-          if (from.includes('guerrillamail') || subject.includes('guerrillamail')) return false;
-          return true;
-        })
+        .filter(m => m.mail_id && m.mail_id !== '0')
         .map(m => ({
           id:        String(m.mail_id),
           from:      m.mail_from   || '',
@@ -177,20 +127,7 @@ module.exports = async function handler(req, res) {
         if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
       }
 
-      // ── 10-min cache merge ──────────────────────────────────
-      // Merge fresh messages with cached ones so the inbox survives
-      // empty provider responses and brief polling gaps.
-      const prior  = inboxCache.get(sid);
-      const cached = (prior && Date.now() - prior.updatedAt < CACHE_TTL)
-        ? prior.messages : [];
-      const seen   = new Set(messages.map(m => m.id));
-      const merged = [
-        ...messages,
-        ...cached.filter(m => !seen.has(m.id)),
-      ].sort((a, b) => b.timestamp - a.timestamp);
-      inboxCache.set(sid, { messages: merged, updatedAt: Date.now() });
-
-      return res.json({ messages: merged, count: merged.length });
+      return res.json({ messages, count: data.count || 0 });
     } catch (err) {
       return res.json({ error: 'inbox_failed', detail: err.message, messages: [] });
     }
