@@ -108,6 +108,12 @@ module.exports = async function handler(req, res) {
 
       const list     = Array.isArray(data.list) ? data.list : [];
       const messages = list
+  .filter(m =>
+    m.mail_id &&
+    m.mail_id !== '0' &&
+    !String(m.mail_from || '').includes('guerrillamail')
+  )
+  .map(m => ({
         .filter(m => m.mail_id && m.mail_id !== '0')
         .map(m => ({
           id:        String(m.mail_id),
