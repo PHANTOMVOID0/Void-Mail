@@ -16,7 +16,7 @@ let countdownTimer  = null;
 let isFetching      = false;
 let inboxUnlocked   = false;
 let seenIds         = new Set();
-let countdownVal    = 2;
+let countdownVal    = 15;
 
 // ── THREE.JS BACKGROUND ──────────────────────
 
@@ -186,45 +186,25 @@ function stopRefresh() {
     clearInterval(refreshInterval);
     refreshInterval = null;
   }
-
   stopCountdown();
 }
 
 function startRefreshCycle() {
-
   stopRefresh();
-
-  countdownVal = 2;
-  updateCountdown();
-
   startCountdown();
-
-  refreshInterval = setInterval(async () => {
-
-    if (isFetching) return;
-
-    await fetchInbox();
-
-    countdownVal = 2;
-    updateCountdown();
-
-  }, 2500);
+  refreshInterval = setInterval(() => {
+    fetchInbox();
+    startCountdown(); // reset countdown after each poll
+  }, 15000);
 }
 
 function startCountdown() {
-
   stopCountdown();
-
+  countdownVal = 15;
+  updateCountdown();
   countdownTimer = setInterval(() => {
-
-    countdownVal--;
-
-    if (countdownVal <= 0) {
-      countdownVal = 0;
-    }
-
+    countdownVal = Math.max(0, countdownVal - 1);
     updateCountdown();
-
   }, 1000);
 }
 
@@ -237,10 +217,7 @@ function stopCountdown() {
 
 function updateCountdown() {
   const el = document.getElementById('refresh-countdown');
-
-  if (el) {
-    el.textContent = countdownVal;
-  }
+  if (el) el.textContent = countdownVal;
 }
 
 // ── LOCALSTORAGE PERSISTENCE ─────────────────
@@ -356,15 +333,11 @@ function resetInboxUI() {
   }
   empty.style.display = 'flex';
 }
+
 // ── FETCH INBOX ──────────────────────────────
 
-async function fetchInbox(force = false) {
-
-  // Prevent overlap unless manually forced
-  if ((isFetching && !force) || !currentSid || !inboxUnlocked) {
-    return;
-  }
-
+async function fetchInbox() {
+  if (isFetching || !currentSid || !inboxUnlocked) return;
   isFetching = true;
 
   const loading = document.getElementById('inbox-loading');
@@ -373,15 +346,9 @@ async function fetchInbox(force = false) {
   if (loading) loading.style.display = 'flex';
 
   try {
-
-    const res = await fetch(
-      `${PROXY}?action=inbox&sid=${currentSid}&t=${Date.now()}`,
-      {
-        cache: 'no-store'
-      }
-    );
-
+    const res  = await fetch(`${PROXY}?action=inbox&sid=${currentSid}`, { cache: 'no-store' });
     const data = await res.json();
+
     // Server-side session expired (Vercel cold start) — auto-regenerate
     if (data.error === 'session_expired') {
       clearSession();
@@ -570,31 +537,21 @@ function esc(s) {
 
 window.addEventListener('DOMContentLoaded', async () => {
 
- // ── Button bindings ──
+  // ── Button bindings ──
+  const btnGenerate = document.getElementById('btn-generate');
+  const btnCopy     = document.getElementById('btn-copy');
+  const btnRefresh  = document.getElementById('btn-refresh-manual');
+  const btnOtpCopy  = document.getElementById('btn-otp-copy');
 
-const btnGenerate = document.getElementById('btn-generate');
-const btnCopy     = document.getElementById('btn-copy');
-const btnRefresh  = document.getElementById('btn-refresh-manual');
-const btnOtpCopy  = document.getElementById('btn-otp-copy');
-
-if (btnGenerate) btnGenerate.addEventListener('click', generateEmail);
-
-if (btnCopy) btnCopy.addEventListener('click', copyEmail);
-
-if (btnRefresh) {
-  btnRefresh.addEventListener('click', () => fetchInbox(true));
-}
-
-if (btnOtpCopy) {
-  btnOtpCopy.addEventListener('click', () => {
-    const code = document.getElementById('otp-value')?.textContent;
-
-    if (code) {
-      copyText(code);
-      showToast('✓ OTP COPIED');
-    }
-  });
-}
+  if (btnGenerate) btnGenerate.addEventListener('click', generateEmail);
+  if (btnCopy)     btnCopy.addEventListener('click', copyEmail);
+  if (btnRefresh)  btnRefresh.addEventListener('click', () => fetchInbox());
+  if (btnOtpCopy)  {
+    btnOtpCopy.addEventListener('click', () => {
+      const code = document.getElementById('otp-value')?.textContent;
+      if (code) { copyText(code); showToast('✓ OTP COPIED'); }
+    });
+  }
 
   // ── Modal bindings ──
   document.getElementById('msg-modal-close')?.addEventListener('click', closeModal);
