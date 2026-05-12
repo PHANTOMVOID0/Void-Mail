@@ -206,7 +206,7 @@ async function generateEmail() {
     input.value      = currentEmail;
     input.style.color = '';
     showToast('✓ NEW IDENTITY CREATED');
-
+     unlockInbox();
   } catch (err) {
     console.error('[generate]', err);
     input.value       = 'ERROR — RETRY';
