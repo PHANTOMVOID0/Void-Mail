@@ -1,3 +1,21 @@
+/**
+ * MIRZAPUR MAIL — Proxy Backend
+ * Provider: GuerillaMail Public API (api.guerrillamail.com)
+ * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
+ *
+ * Why GuerillaMail:
+ *  - Genuinely public API, no key, no auth, stable since 2006
+ *  - Returns PHPSESSID cookie for session continuity
+ *  - check_email, fetch_email, get_email_address all documented
+ *
+ * Session model:
+ *  - Frontend gets a short "sid" token from us on /generate
+ *  - We map sid → { phpsessid, email, seq } in memory
+ *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
+ *  - If Vercel cold-starts (session lost), frontend gets session_expired
+ *    and auto-regenerates a new address
+ */
+
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
 // sid → { phpsessid, email, seq, ts }
@@ -106,24 +124,19 @@ module.exports = async function handler(req, res) {
       sess.phpsessid = newId;
       sessions.set(sid, sess);
 
-      const list = Array.isArray(data.list) ? data.list : [];
-
-const messages = list
-  .filter(m =>
-    m.mail_id &&
-    m.mail_id !== '0' &&
-    !String(m.mail_from || '').toLowerCase().includes('guerrillamail')
-  )
-  .map(m => ({
-    id:        String(m.mail_id),
-    from:      m.mail_from || '',
-    subject:   htmlDecode(m.mail_subject || '(no subject)'),
-    preview:   htmlDecode(m.mail_excerpt || ''),
-    timestamp: Number(m.mail_timestamp) || 0,
-    read:      m.mail_read === 1,
-    date:      m.mail_date || '',
-  }))
-  .sort((a, b) => b.timestamp - a.timestamp);
+      const list     = Array.isArray(data.list) ? data.list : [];
+      const messages = list
+        .filter(m => m.mail_id && m.mail_id !== '0')
+        .map(m => ({
+          id:        String(m.mail_id),
+          from:      m.mail_from   || '',
+          subject:   htmlDecode(m.mail_subject  || '(no subject)'),
+          preview:   htmlDecode(m.mail_excerpt  || ''),
+          timestamp: Number(m.mail_timestamp)   || 0,
+          read:      m.mail_read === 1,
+          date:      m.mail_date || '',
+        }))
+        .sort((a, b) => b.timestamp - a.timestamp);
 
       // Advance seq so next poll only fetches newer mail
       if (messages.length) {
