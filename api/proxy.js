@@ -1,8 +1,48 @@
+/**
+ * VOIDMAIL — Proxy Backend
+ * Provider: GuerillaMail Public API (api.guerrillamail.com)
+ * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
+ *
+ * Why GuerillaMail:
+ *  - Genuinely public API, no key, no auth, stable since 2006
+ *  - Returns PHPSESSID cookie for session continuity
+ *  - check_email, fetch_email, get_email_address all documented
+ *
+ * Session model:
+ *  - Frontend gets a short "sid" token from us on /generate
+ *  - We map sid → { phpsessid, email, seq } in memory
+ *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
+ *  - If Vercel cold-starts (session lost), frontend gets session_expired
+ *    and auto-regenerates a new address
+ *
+ * Inbox cache:
+ *  - sid → { messages: [...], updatedAt: timestamp }
+ *  - Merges + deduplicates every poll response against cached messages
+ *  - If provider returns empty, cached messages are served instead
+ *  - Entries expire after 10 minutes; a 60s cleanup interval purges them
+ *  - In-memory only — Vercel cold starts clear it (acceptable for temp mail)
+ */
 
 const GM = 'https://api.guerrillamail.com/ajax.php';
 
 // sid → { phpsessid, email, seq, ts }
 const sessions = new Map();
+
+// ─── inbox cache (10 min TTL) ─────────────────────────────────
+// sid → { messages: [...], updatedAt: ms }
+// Survives provider blips; cleared on Vercel cold start (acceptable).
+
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+const inboxCache = new Map();
+
+// Purge expired entries every 60 s to keep serverless memory lean
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of inboxCache.entries()) {
+    if (now - entry.updatedAt > CACHE_TTL) inboxCache.delete(key);
+  }
+}, 60 * 1000);
 
 // ─── helpers ──────────────────────────────────────────────────
 
@@ -80,6 +120,9 @@ module.exports = async function handler(req, res) {
         ts:        Number(data.email_timestamp) || 0,
       });
 
+      // Fresh identity — start with a clean cache slot
+      inboxCache.set(ourSid, { messages: [], updatedAt: Date.now() });
+
       return res.json({
         email: data.email_addr,
         sid:   ourSid,
@@ -107,25 +150,15 @@ module.exports = async function handler(req, res) {
       sess.phpsessid = newId;
       sessions.set(sid, sess);
 
-      const list     = Array.isArray(data.list) ? data.list : [];
-const messages = list
-  .filter(m => {
-    if (!m.mail_id || m.mail_id === '0') return false;
-
-    const from = String(m.mail_from || '').toLowerCase();
-    const subject = String(m.mail_subject || '').toLowerCase();
-
-    // Remove GuerrillaMail welcome emails
-    if (
-      from.includes('guerrillamail') ||
-      subject.includes('welcome to guerrilla mail')
-    ) {
-      return false;
-    }
-
-    return true;
-  })
-  .map(m => ({
+      const list       = Array.isArray(data.list) ? data.list : [];
+      const freshMsgs  = list
+        .filter(m =>
+          m.mail_id &&
+          m.mail_id !== '0' &&
+          !String(m.mail_from || '').toLowerCase().includes('guerrillamail') &&
+          !String(m.mail_subject || '').toLowerCase().includes('guerrillamail')
+        )
+        .map(m => ({
           id:        String(m.mail_id),
           from:      m.mail_from   || '',
           subject:   htmlDecode(m.mail_subject  || '(no subject)'),
@@ -133,16 +166,36 @@ const messages = list
           timestamp: Number(m.mail_timestamp)   || 0,
           read:      m.mail_read === 1,
           date:      m.mail_date || '',
-        }))
-        .sort((a, b) => b.timestamp - a.timestamp);
+        }));
+
+      // ── Merge with cache ────────────────────────────────────
+      // Pull previous messages (if cache is still warm)
+      const cached   = inboxCache.get(sid);
+      const prevMsgs = (cached && Date.now() - cached.updatedAt < CACHE_TTL)
+        ? cached.messages
+        : [];
+
+      // Deduplicate: fresh messages take priority; fill in any prior ones by ID
+      const seen     = new Set(freshMsgs.map(m => m.id));
+      const merged   = [
+        ...freshMsgs,
+        ...prevMsgs.filter(m => !seen.has(m.id)),
+      ].sort((a, b) => b.timestamp - a.timestamp);
+
+      // Persist merged result
+      inboxCache.set(sid, { messages: merged, updatedAt: Date.now() });
+
+      // Use merged set as the response; if provider returned nothing,
+      // cached messages still fill the inbox (up to TTL expiry).
+      const messages = merged;
 
       // Advance seq so next poll only fetches newer mail
-      if (messages.length) {
-        const max = Math.max(...messages.map(m => Number(m.id)));
+      if (freshMsgs.length) {
+        const max = Math.max(...freshMsgs.map(m => Number(m.id)));
         if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
       }
 
-      return res.json({ messages, count: data.count || 0 });
+      return res.json({ messages, count: messages.length, cached: prevMsgs.length > 0 });
     } catch (err) {
       return res.json({ error: 'inbox_failed', detail: err.message, messages: [] });
     }
