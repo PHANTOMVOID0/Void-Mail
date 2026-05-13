@@ -502,7 +502,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 200px;
 }
 
 /* === EMPTY STATE === */
