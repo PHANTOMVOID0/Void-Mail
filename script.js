@@ -258,12 +258,12 @@ function startRefreshCycle() {
   refreshInterval = setInterval(() => {
     fetchInbox();
     startCountdown(); // reset countdown after each poll
-  }, 15000);
+  }, 3000);
 }
 
 function startCountdown() {
   stopCountdown();
-  countdownVal = 15;
+  countdownVal = 3;
   updateCountdown();
   countdownTimer = setInterval(() => {
     countdownVal = Math.max(0, countdownVal - 1);
