@@ -351,6 +351,7 @@ async function generateEmail() {
     currentEmail = data.email;
     currentSid   = data.sid;
     saveSession();
+     updateSendButton();
 
     setEmailDisplay(currentEmail, false);
     if (copyBtn)    { copyBtn.disabled = false; }
@@ -603,6 +604,55 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+// ── SEND ANONYMOUS EMAIL ──────────────────────────────────
+const btnSend   = document.getElementById('btn-send');
+const sendHint  = document.getElementById('send-hint');
+
+function updateSendButton() {
+  const hasIdentity = !!currentSid; // your existing variable holding the session id
+  btnSend.disabled = !hasIdentity;
+  sendHint.textContent = hasIdentity
+    ? `Sending as: ${currentEmail}`   // your existing variable holding the email
+    : 'Generate an identity first to send mail';
+}
+
+btnSend.addEventListener('click', async () => {
+  const to      = document.getElementById('send-to').value.trim();
+  const subject = document.getElementById('send-subject').value.trim();
+  const body    = document.getElementById('send-body').value.trim();
+
+  if (!to || !subject || !body) {
+    showToast('Fill in all fields before sending.'); // your existing toast function
+    return;
+  }
+
+  btnSend.disabled = true;
+  btnSend.querySelector('span').textContent = '⟶ TRANSMITTING...';
+
+  try {
+    const res = await fetch(
+      `/api/proxy?action=send&sid=${currentSid}` +
+      `&to=${encodeURIComponent(to)}` +
+      `&subject=${encodeURIComponent(subject)}` +
+      `&body=${encodeURIComponent(body)}`
+    );
+    const data = await res.json();
+
+    if (data.ok) {
+      showToast('✓ MESSAGE SENT ANONYMOUSLY');
+      document.getElementById('send-to').value = '';
+      document.getElementById('send-subject').value = '';
+      document.getElementById('send-body').value = '';
+    } else {
+      showToast('✗ SEND FAILED — ' + (data.error || 'unknown'));
+    }
+  } catch (e) {
+    showToast('✗ NETWORK ERROR');
+  } finally {
+    btnSend.disabled = false;
+    btnSend.querySelector('span').textContent = '⟶ SEND ANONYMOUSLY';
+  }
+});
 
 // ── INIT ─────────────────────────────────────
 
@@ -637,6 +687,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentEmail  = saved.email;
     currentSid    = saved.sid;
     inboxUnlocked = true;
+     updateSendButton();
 
     setEmailDisplay(currentEmail, false);
     setStatus('online', 0);
