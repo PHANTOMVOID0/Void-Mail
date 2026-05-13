@@ -179,6 +179,41 @@ module.exports = async function handler(req, res) {
       return res.json({ error: 'read_failed', detail: err.message });
     }
   }
+  // ── SEND EMAIL ────────────────────────────────────────────
+if (action === 'send') {
+  if (!sid) return res.json({ error: 'missing_sid' });
+
+  const sess = sessions.get(sid);
+  if (!sess) return res.json({ error: 'session_expired' });
+
+  const { to, subject, body } = req.query;
+  if (!to || !subject || !body)
+    return res.json({ error: 'missing_params' });
+
+  try {
+    const [rcptLocal, rcptDomain] = to.split('@');
+    const url = gmUrl({
+      f:                    'send_email',
+      rcpt_local_part:      rcptLocal,
+      rcpt_domain:          rcptDomain,
+      from_name:            'VoidMail User',
+      subject:              subject,
+      body:                 body,
+    });
+
+    const { data, newId } = await gmGet(url, sess.phpsessid);
+    sess.phpsessid = newId;
+    sessions.set(sid, sess);
+
+    if (data.mail_id) {
+      return res.json({ ok: true, mail_id: data.mail_id });
+    } else {
+      return res.json({ error: 'send_failed', debug: data });
+    }
+  } catch (err) {
+    return res.json({ error: 'send_error', detail: err.message });
+  }
+}
 
   return res.json({ error: 'unknown_action' });
 };
