@@ -963,3 +963,57 @@ body {
 .otp-banner.otp-pulse {
   animation: otp-pulse-anim 0.8s ease;
 }
+/* ── SEND PANEL ─────────────────────────────── */
+.send-panel {
+  margin-top: 2rem;
+  border: 1px solid var(--border);
+  padding: 1.2rem 1.5rem;
+  background: rgba(0,0,0,0.4);
+}
+
+.send-form { display: flex; flex-direction: column; gap: 0.8rem; margin-top: 0.8rem; }
+
+.send-row { display: flex; align-items: flex-start; gap: 0.8rem; }
+.send-row--msg { align-items: flex-start; }
+
+.send-label {
+  width: 90px; flex-shrink: 0;
+  font-family: 'Share Tech Mono', monospace;
+  color: var(--accent); font-size: 0.8rem;
+  padding-top: 0.55rem;
+}
+
+.send-input, .send-textarea {
+  flex: 1;
+  background: rgba(0,255,180,0.04);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.7rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.send-input:focus, .send-textarea:focus { border-color: var(--accent); }
+.send-textarea { resize: vertical; min-height: 100px; }
+
+.send-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: 0.4rem; }
+
+.btn-send {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.85rem;
+  padding: 0.55rem 1.2rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.btn-send:hover:not(:disabled) { background: var(--accent); color: #000; }
+.btn-send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.send-hint {
+  font-size: 0.72rem;
+  color: var(--fg-dim, #666);
+  font-family: 'Share Tech Mono', monospace;
+}
