@@ -98,6 +98,30 @@
           <div class="loading-text">SCANNING NETWORK...</div>
         </div>
       </section>
+      <!-- Send Anonymous Email panel -->
+<section class="send-panel">
+  <div class="panel-label">// SEND ANONYMOUS TRANSMISSION</div>
+  <div class="send-form">
+    <div class="send-row">
+      <label class="send-label">TO:</label>
+      <input type="email" id="send-to" class="send-input" placeholder="recipient@example.com" />
+    </div>
+    <div class="send-row">
+      <label class="send-label">SUBJECT:</label>
+      <input type="text" id="send-subject" class="send-input" placeholder="Enter subject..." />
+    </div>
+    <div class="send-row send-row--msg">
+      <label class="send-label">MESSAGE:</label>
+      <textarea id="send-body" class="send-textarea" placeholder="Your anonymous message..."></textarea>
+    </div>
+    <div class="send-actions">
+      <button class="btn-send" id="btn-send" disabled>
+        <span>⟶ SEND ANONYMOUSLY</span>
+      </button>
+      <span class="send-hint" id="send-hint">Generate an identity first to send mail</span>
+    </div>
+  </div>
+</section>
 
     </main>
 
