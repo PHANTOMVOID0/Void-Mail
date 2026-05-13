@@ -380,22 +380,12 @@ function resetInboxUI() {
   const list = document.getElementById('inbox-list');
   if (!list) return;
 
-  // Remove message cards but keep the empty placeholder
+  // Remove all message cards
   Array.from(list.querySelectorAll('.inbox-card')).forEach(c => c.remove());
 
-  let empty = document.getElementById('inbox-empty');
-  if (!empty) {
-    empty = document.createElement('div');
-    empty.className = 'inbox-empty';
-    empty.id = 'inbox-empty';
-    empty.innerHTML = `
-      <div class="empty-icon">▣</div>
-      <div class="empty-title">NO TRANSMISSIONS DETECTED</div>
-      <div class="empty-sub">Generate an identity above to begin intercepting messages</div>
-    `;
-    list.appendChild(empty);
-  }
-  empty.style.display = 'flex';
+  // Show empty state (now lives outside inbox-list)
+  const empty = document.getElementById('inbox-empty');
+  if (empty) empty.style.display = 'flex';
 }
 
 // ── FETCH INBOX ──────────────────────────────
@@ -445,13 +435,30 @@ async function fetchInbox() {
 
 // ── RENDER MESSAGES ──────────────────────────
 
+// ── SYSTEM MAIL FILTER ───────────────────────
+
+const SYSTEM_SENDERS = [
+  'no-reply@guerrillamail.com', 'no-reply@guerrillamail.net',
+  'no-reply@guerrillamail.org', 'no-reply@guerrillamail.biz',
+  'no-reply@guerrillamail.de',  'no-reply@guerrillamail.info',
+  'no-reply@grr.la', 'no-reply@spam4.me',
+];
+
+function isSystemMail(msg) {
+  const from = (msg.from || '').toLowerCase().trim();
+  return SYSTEM_SENDERS.some(s => from === s || from.endsWith('@guerrillamail.com'));
+}
+
 function renderMessages(messages) {
   const list  = document.getElementById('inbox-list');
   const empty = document.getElementById('inbox-empty');
 
   hideOTPBanner();
 
-  if (!messages.length) {
+  // Filter out Guerrilla Mail system/greeting emails
+  const filtered = messages.filter(msg => !isSystemMail(msg));
+
+  if (!filtered.length) {
     if (empty) empty.style.display = 'flex';
     return;
   }
@@ -460,12 +467,12 @@ function renderMessages(messages) {
   if (empty) empty.style.display = 'none';
 
   // Show OTP from latest message preview
-  const latestOTP = extractOTP(messages[0].preview + ' ' + messages[0].subject);
+  const latestOTP = extractOTP(filtered[0].preview + ' ' + filtered[0].subject);
   if (latestOTP) showOTPBanner(latestOTP);
 
   // Only insert messages we haven't rendered yet
   let anyNew = false;
-  messages.forEach(msg => {
+  filtered.forEach(msg => {
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
     anyNew = true;
