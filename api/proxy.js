@@ -179,7 +179,12 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── SEND EMAIL via Mailjet ─────────────────────────────────
+  // ── SEND EMAIL via Resend ──────────────────────────────────
+  // Free tier: 100 emails/day, works instantly after signup
+  // Setup: sign up at resend.com → API Keys → create key
+  // Vercel env vars needed:
+  //   RESEND_API_KEY  = re_xxxxxxxxxxxx
+  //   RESEND_SENDER   = onboarding@resend.dev  (works on free tier without domain)
   if (action === 'send') {
     if (!sid) return res.json({ error: 'missing_sid' });
 
@@ -190,15 +195,13 @@ module.exports = async function handler(req, res) {
     if (!to || !subject || !body)
       return res.json({ error: 'missing_params' });
 
-    const MJ_KEY    = process.env.MAILJET_API_KEY;
-    const MJ_SECRET = process.env.MAILJET_SECRET_KEY;
-    const MJ_FROM   = process.env.MAILJET_SENDER;
+    const RESEND_KEY    = process.env.RESEND_API_KEY;
+    const RESEND_SENDER = process.env.RESEND_SENDER || 'onboarding@resend.dev';
 
-    // Not configured yet — return a helpful error
-    if (!MJ_KEY || !MJ_SECRET || !MJ_FROM) {
+    if (!RESEND_KEY) {
       return res.json({
         error: 'send_not_configured',
-        hint:  'Set MAILJET_API_KEY, MAILJET_SECRET_KEY, MAILJET_SENDER in Vercel env vars. Free signup: mailjet.com',
+        hint:  'Set RESEND_API_KEY in Vercel env vars. Free signup at resend.com — works instantly, no approval needed.',
       });
     }
 
@@ -209,36 +212,33 @@ module.exports = async function handler(req, res) {
         .replace(/>/g, '&gt;');
 
       const payload = {
-        Messages: [{
-          From:    { Email: MJ_FROM,    Name: 'VoidMail' },
-          ReplyTo: { Email: sess.email, Name: 'VoidMail Anonymous' },
-          To:      [{ Email: to }],
-          Subject: subject,
-          TextPart: body,
-          HTMLPart: `<pre style="font-family:monospace;white-space:pre-wrap;line-height:1.6">${safeBody}</pre><hr/><small style="color:#999">Sent anonymously via VoidMail &mdash; replies go to: ${sess.email}</small>`,
-        }],
+        from:     `VoidMail <${RESEND_SENDER}>`,
+        reply_to: sess.email,
+        to:       [to],
+        subject:  subject,
+        text:     body,
+        html:     `<pre style="font-family:monospace;white-space:pre-wrap;line-height:1.6">${safeBody}</pre><hr/><small style="color:#999">Sent anonymously via VoidMail — replies go to: ${sess.email}</small>`,
       };
 
-      const mjRes = await fetch('https://api.mailjet.com/v3.1/send', {
+      const rsRes = await fetch('https://api.resend.com/emails', {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',
-          'Authorization': 'Basic ' + Buffer.from(`${MJ_KEY}:${MJ_SECRET}`).toString('base64'),
+          'Authorization': `Bearer ${RESEND_KEY}`,
         },
         body: JSON.stringify(payload),
       });
 
-      const mjData = await mjRes.json();
+      const rsData = await rsRes.json();
 
-      if (mjRes.ok && mjData.Messages?.[0]?.Status === 'success') {
-        return res.json({ ok: true });
+      if (rsRes.ok && rsData.id) {
+        return res.json({ ok: true, id: rsData.id });
       }
 
-      const errMsg = mjData.Messages?.[0]?.Errors?.[0]?.ErrorMessage
-                  || mjData.ErrorMessage
-                  || JSON.stringify(mjData);
-
-      return res.json({ error: 'send_failed', detail: errMsg });
+      return res.json({
+        error:  'send_failed',
+        detail: rsData.message || rsData.name || JSON.stringify(rsData),
+      });
 
     } catch (err) {
       return res.json({ error: 'send_error', detail: err.message });
