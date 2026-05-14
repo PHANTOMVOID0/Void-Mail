@@ -351,7 +351,6 @@ async function generateEmail() {
     currentEmail = data.email;
     currentSid   = data.sid;
     saveSession();
-     updateSendButton();
 
     setEmailDisplay(currentEmail, false);
     if (copyBtn)    { copyBtn.disabled = false; }
@@ -596,65 +595,6 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
-// ── SEND ANONYMOUS EMAIL ─────────────────────
-
-function updateSendButton() {
-  const btn  = document.getElementById('btn-send');
-  const hint = document.getElementById('send-hint');
-  if (!btn || !hint) return;
-  const ready = !!currentSid;
-  btn.disabled = !ready;
-  hint.textContent = ready
-    ? `Sending as: ${currentEmail}`
-    : 'Generate an identity first to send mail';
-}
-
-async function handleSend() {
-  const btn     = document.getElementById('btn-send');
-  const to      = document.getElementById('send-to')?.value.trim();
-  const subject = document.getElementById('send-subject')?.value.trim();
-  const body    = document.getElementById('send-body')?.value.trim();
-
-  if (!to)      { showToast('✗ ENTER A RECIPIENT'); return; }
-  if (!subject) { showToast('✗ ENTER A SUBJECT');   return; }
-  if (!body)    { showToast('✗ MESSAGE IS EMPTY');  return; }
-  if (!currentSid) { showToast('✗ NO ACTIVE IDENTITY'); return; }
-
-  if (btn) {
-    btn.disabled = true;
-    btn.querySelector('span').textContent = '⟶ TRANSMITTING...';
-  }
-
-  try {
-    const url = `${PROXY}?action=send`
-      + `&sid=${encodeURIComponent(currentSid)}`
-      + `&to=${encodeURIComponent(to)}`
-      + `&subject=${encodeURIComponent(subject)}`
-      + `&body=${encodeURIComponent(body)}`;
-
-    const res  = await fetch(url, { cache: 'no-store' });
-    const data = await res.json();
-
-    if (data.ok) {
-      showToast('✓ TRANSMISSION SENT ANONYMOUSLY', 3000);
-      document.getElementById('send-to').value      = '';
-      document.getElementById('send-subject').value = '';
-      document.getElementById('send-body').value    = '';
-    } else if (data.error === 'send_not_configured') {
-      showToast('⚠ MAILJET NOT CONFIGURED — SEE README', 5000);
-    } else {
-      showToast('✗ SEND FAILED — ' + (data.detail || data.error || 'UNKNOWN'), 4000);
-    }
-  } catch (e) {
-    showToast('✗ NETWORK ERROR');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.querySelector('span').textContent = '⟶ SEND ANONYMOUSLY';
-    }
-  }
-}
-
 // ── INIT ─────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -668,9 +608,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (btnGenerate) btnGenerate.addEventListener('click', generateEmail);
   if (btnCopy)     btnCopy.addEventListener('click', copyEmail);
   if (btnRefresh)  btnRefresh.addEventListener('click', () => fetchInbox());
-
-  const btnSend = document.getElementById('btn-send');
-  if (btnSend) btnSend.addEventListener('click', handleSend);
 
   if (btnOtpCopy)  {
     btnOtpCopy.addEventListener('click', () => {
@@ -692,7 +629,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentEmail  = saved.email;
     currentSid    = saved.sid;
     inboxUnlocked = true;
-     updateSendButton();
 
     setEmailDisplay(currentEmail, false);
     setStatus('online', 0);
