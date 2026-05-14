@@ -519,6 +519,15 @@ body {
   gap: 12px;
 }
 
+.inbox-empty.hidden {
+  display: none !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+
 .empty-icon {
   font-size: 2.5rem;
   color: var(--text-dim);
