@@ -380,13 +380,11 @@ async function generateEmail() {
 function resetInboxUI() {
   const list = document.getElementById('inbox-list');
   if (!list) return;
-
-  // Remove all message cards
   Array.from(list.querySelectorAll('.inbox-card')).forEach(c => c.remove());
-
-  // Show empty state (now lives outside inbox-list)
   const empty = document.getElementById('inbox-empty');
-  if (empty) empty.style.display = 'flex';
+  if (empty) {
+    empty.classList.remove('hidden');
+  }
 }
 
 // ── FETCH INBOX ──────────────────────────────
@@ -460,18 +458,17 @@ function renderMessages(messages) {
   const filtered = messages.filter(msg => !isSystemMail(msg));
 
   if (!filtered.length) {
-    if (empty) empty.style.display = 'flex';
+    if (empty) empty.classList.remove('hidden');
     return;
   }
 
-  // Hide empty state
-  if (empty) empty.style.display = 'none';
+  // Permanently hide empty state — classList only, no inline style
+  if (empty) empty.classList.add('hidden');
 
   // Show OTP from latest message preview
   const latestOTP = extractOTP(filtered[0].preview + ' ' + filtered[0].subject);
   if (latestOTP) showOTPBanner(latestOTP);
 
-  // Only insert messages we haven't rendered yet
   let anyNew = false;
   filtered.forEach(msg => {
     if (seenIds.has(msg.id)) return;
@@ -479,15 +476,10 @@ function renderMessages(messages) {
     anyNew = true;
 
     const card = buildCard(msg);
-    // Insert newest on top, before existing cards (not before empty placeholder)
     const firstCard = list.querySelector('.inbox-card');
-    if (firstCard) {
-      list.insertBefore(card, firstCard);
-    } else {
-      list.appendChild(card);
-    }
+    if (firstCard) list.insertBefore(card, firstCard);
+    else list.appendChild(card);
 
-    // Staggered entrance animation
     card.style.opacity = '0';
     card.style.transform = 'translateX(-12px)';
     requestAnimationFrame(() => {
@@ -604,55 +596,64 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
-// ── SEND ANONYMOUS EMAIL ──────────────────────────────────
-const btnSend   = document.getElementById('btn-send');
-const sendHint  = document.getElementById('send-hint');
+// ── SEND ANONYMOUS EMAIL ─────────────────────
 
 function updateSendButton() {
-  const hasIdentity = !!currentSid; // your existing variable holding the session id
-  btnSend.disabled = !hasIdentity;
-  sendHint.textContent = hasIdentity
-    ? `Sending as: ${currentEmail}`   // your existing variable holding the email
+  const btn  = document.getElementById('btn-send');
+  const hint = document.getElementById('send-hint');
+  if (!btn || !hint) return;
+  const ready = !!currentSid;
+  btn.disabled = !ready;
+  hint.textContent = ready
+    ? `Sending as: ${currentEmail}`
     : 'Generate an identity first to send mail';
 }
 
-btnSend.addEventListener('click', async () => {
-  const to      = document.getElementById('send-to').value.trim();
-  const subject = document.getElementById('send-subject').value.trim();
-  const body    = document.getElementById('send-body').value.trim();
+async function handleSend() {
+  const btn     = document.getElementById('btn-send');
+  const to      = document.getElementById('send-to')?.value.trim();
+  const subject = document.getElementById('send-subject')?.value.trim();
+  const body    = document.getElementById('send-body')?.value.trim();
 
-  if (!to || !subject || !body) {
-    showToast('Fill in all fields before sending.'); // your existing toast function
-    return;
+  if (!to)      { showToast('✗ ENTER A RECIPIENT'); return; }
+  if (!subject) { showToast('✗ ENTER A SUBJECT');   return; }
+  if (!body)    { showToast('✗ MESSAGE IS EMPTY');  return; }
+  if (!currentSid) { showToast('✗ NO ACTIVE IDENTITY'); return; }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.querySelector('span').textContent = '⟶ TRANSMITTING...';
   }
 
-  btnSend.disabled = true;
-  btnSend.querySelector('span').textContent = '⟶ TRANSMITTING...';
-
   try {
-    const res = await fetch(
-      `/api/proxy?action=send&sid=${currentSid}` +
-      `&to=${encodeURIComponent(to)}` +
-      `&subject=${encodeURIComponent(subject)}` +
-      `&body=${encodeURIComponent(body)}`
-    );
+    const url = `${PROXY}?action=send`
+      + `&sid=${encodeURIComponent(currentSid)}`
+      + `&to=${encodeURIComponent(to)}`
+      + `&subject=${encodeURIComponent(subject)}`
+      + `&body=${encodeURIComponent(body)}`;
+
+    const res  = await fetch(url, { cache: 'no-store' });
     const data = await res.json();
 
     if (data.ok) {
-      showToast('✓ MESSAGE SENT ANONYMOUSLY');
-      document.getElementById('send-to').value = '';
+      showToast('✓ TRANSMISSION SENT ANONYMOUSLY', 3000);
+      document.getElementById('send-to').value      = '';
       document.getElementById('send-subject').value = '';
-      document.getElementById('send-body').value = '';
+      document.getElementById('send-body').value    = '';
+    } else if (data.error === 'send_not_configured') {
+      showToast('⚠ MAILJET NOT CONFIGURED — SEE README', 5000);
     } else {
-      showToast('✗ SEND FAILED — ' + (data.error || 'unknown'));
+      showToast('✗ SEND FAILED — ' + (data.detail || data.error || 'UNKNOWN'), 4000);
     }
   } catch (e) {
     showToast('✗ NETWORK ERROR');
   } finally {
-    btnSend.disabled = false;
-    btnSend.querySelector('span').textContent = '⟶ SEND ANONYMOUSLY';
+    if (btn) {
+      btn.disabled = false;
+      btn.querySelector('span').textContent = '⟶ SEND ANONYMOUSLY';
+    }
   }
-});
+}
 
 // ── INIT ─────────────────────────────────────
 
@@ -667,6 +668,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (btnGenerate) btnGenerate.addEventListener('click', generateEmail);
   if (btnCopy)     btnCopy.addEventListener('click', copyEmail);
   if (btnRefresh)  btnRefresh.addEventListener('click', () => fetchInbox());
+
+  const btnSend = document.getElementById('btn-send');
+  if (btnSend) btnSend.addEventListener('click', handleSend);
+
   if (btnOtpCopy)  {
     btnOtpCopy.addEventListener('click', () => {
       const code = document.getElementById('otp-value')?.textContent;
