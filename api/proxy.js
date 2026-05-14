@@ -1,19 +1,21 @@
 /**
- * MIRZAPUR MAIL — Proxy Backend
- * Provider: GuerillaMail Public API (api.guerrillamail.com)
- * Official docs: https://www.guerrillamail.com/GuerrillaMailAPI.html
+ * VOIDMAIL — Proxy Backend
  *
- * Why GuerillaMail:
- *  - Genuinely public API, no key, no auth, stable since 2006
- *  - Returns PHPSESSID cookie for session continuity
- *  - check_email, fetch_email, get_email_address all documented
+ * RECEIVE:  GuerillaMail public API (no key needed)
+ * SEND:     Mailjet REST API (free tier — 200 emails/day, no credit card)
  *
- * Session model:
- *  - Frontend gets a short "sid" token from us on /generate
- *  - We map sid → { phpsessid, email, seq } in memory
- *  - Every inbox/read call forwards the correct PHPSESSID cookie to GM
- *  - If Vercel cold-starts (session lost), frontend gets session_expired
- *    and auto-regenerates a new address
+ * HOW TO GET A FREE MAILJET KEY:
+ *  1. Sign up at https://app.mailjet.com/signup (free, no card)
+ *  2. Go to Account → API Keys
+ *  3. Copy your API Key and Secret Key
+ *  4. Set these env vars in Vercel:
+ *       MAILJET_API_KEY    = your_api_key
+ *       MAILJET_SECRET_KEY = your_secret_key
+ *       MAILJET_SENDER     = yourverified@yourdomain.com
+ *
+ * NOTE: Mailjet requires a verified sender email/domain (free).
+ * The visible "From" will be your verified sender, but Reply-To is set
+ * to the user's disposable Guerrilla address so replies come back to them.
  */
 
 const GM = 'https://api.guerrillamail.com/ajax.php';
@@ -31,7 +33,7 @@ function gmUrl(params) {
 
 async function gmGet(url, phpsessid) {
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (compatible; MirzapurMail/1.0)',
+    'User-Agent': 'Mozilla/5.0 (compatible; VoidMail/1.0)',
     Accept: 'application/json',
   };
   if (phpsessid) headers['Cookie'] = `PHPSESSID=${phpsessid}`;
@@ -39,7 +41,6 @@ async function gmGet(url, phpsessid) {
   const res  = await fetch(url, { headers });
   const text = await res.text();
 
-  // Rotate PHPSESSID if GM sends a new one
   const sc    = res.headers.get('set-cookie') || '';
   const match = sc.match(/PHPSESSID=([^;]+)/);
   const newId = match ? match[1] : phpsessid;
@@ -63,7 +64,7 @@ function htmlDecode(s) {
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
@@ -88,7 +89,6 @@ module.exports = async function handler(req, res) {
         return res.json({ error: 'no_email', debug: data });
       }
 
-      // Create our session token
       const ourSid = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
       sessions.set(ourSid, {
         phpsessid: newId,
@@ -138,7 +138,6 @@ module.exports = async function handler(req, res) {
         }))
         .sort((a, b) => b.timestamp - a.timestamp);
 
-      // Advance seq so next poll only fetches newer mail
       if (messages.length) {
         const max = Math.max(...messages.map(m => Number(m.id)));
         if (max > sess.seq) { sess.seq = max; sessions.set(sid, sess); }
@@ -171,7 +170,7 @@ module.exports = async function handler(req, res) {
         id:      String(data.mail_id   || ''),
         from:    data.mail_from        || '',
         subject: htmlDecode(data.mail_subject || '(no subject)'),
-        body:    data.mail_body        || '',   // HTML, already filtered by GM
+        body:    data.mail_body        || '',
         date:    data.mail_date        || '',
         ts:      Number(data.mail_timestamp) || 0,
       });
@@ -179,41 +178,72 @@ module.exports = async function handler(req, res) {
       return res.json({ error: 'read_failed', detail: err.message });
     }
   }
-  // ── SEND EMAIL ────────────────────────────────────────────
-if (action === 'send') {
-  if (!sid) return res.json({ error: 'missing_sid' });
 
-  const sess = sessions.get(sid);
-  if (!sess) return res.json({ error: 'session_expired' });
+  // ── SEND EMAIL via Mailjet ─────────────────────────────────
+  if (action === 'send') {
+    if (!sid) return res.json({ error: 'missing_sid' });
 
-  const { to, subject, body } = req.query;
-  if (!to || !subject || !body)
-    return res.json({ error: 'missing_params' });
+    const sess = sessions.get(sid);
+    if (!sess) return res.json({ error: 'session_expired' });
 
-  try {
-    const [rcptLocal, rcptDomain] = to.split('@');
-    const url = gmUrl({
-      f:                    'send_email',
-      rcpt_local_part:      rcptLocal,
-      rcpt_domain:          rcptDomain,
-      from_name:            'VoidMail User',
-      subject:              subject,
-      body:                 body,
-    });
+    const { to, subject, body } = req.query;
+    if (!to || !subject || !body)
+      return res.json({ error: 'missing_params' });
 
-    const { data, newId } = await gmGet(url, sess.phpsessid);
-    sess.phpsessid = newId;
-    sessions.set(sid, sess);
+    const MJ_KEY    = process.env.MAILJET_API_KEY;
+    const MJ_SECRET = process.env.MAILJET_SECRET_KEY;
+    const MJ_FROM   = process.env.MAILJET_SENDER;
 
-    if (data.mail_id) {
-      return res.json({ ok: true, mail_id: data.mail_id });
-    } else {
-      return res.json({ error: 'send_failed', debug: data });
+    // Not configured yet — return a helpful error
+    if (!MJ_KEY || !MJ_SECRET || !MJ_FROM) {
+      return res.json({
+        error: 'send_not_configured',
+        hint:  'Set MAILJET_API_KEY, MAILJET_SECRET_KEY, MAILJET_SENDER in Vercel env vars. Free signup: mailjet.com',
+      });
     }
-  } catch (err) {
-    return res.json({ error: 'send_error', detail: err.message });
+
+    try {
+      const safeBody = body
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      const payload = {
+        Messages: [{
+          From:    { Email: MJ_FROM,    Name: 'VoidMail' },
+          ReplyTo: { Email: sess.email, Name: 'VoidMail Anonymous' },
+          To:      [{ Email: to }],
+          Subject: subject,
+          TextPart: body,
+          HTMLPart: `<pre style="font-family:monospace;white-space:pre-wrap;line-height:1.6">${safeBody}</pre><hr/><small style="color:#999">Sent anonymously via VoidMail &mdash; replies go to: ${sess.email}</small>`,
+        }],
+      };
+
+      const mjRes = await fetch('https://api.mailjet.com/v3.1/send', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': 'Basic ' + Buffer.from(`${MJ_KEY}:${MJ_SECRET}`).toString('base64'),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const mjData = await mjRes.json();
+
+      if (mjRes.ok && mjData.Messages?.[0]?.Status === 'success') {
+        return res.json({ ok: true });
+      }
+
+      const errMsg = mjData.Messages?.[0]?.Errors?.[0]?.ErrorMessage
+                  || mjData.ErrorMessage
+                  || JSON.stringify(mjData);
+
+      return res.json({ error: 'send_failed', detail: errMsg });
+
+    } catch (err) {
+      return res.json({ error: 'send_error', detail: err.message });
+    }
   }
-}
 
   return res.json({ error: 'unknown_action' });
 };
